@@ -1,5 +1,9 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include <torch/torch.h>
+#include <torch/script.h>
+#include "Diffusion.h"
+#include <iostream>
 
 //==============================================================================
 AudioPluginAudioProcessor::AudioPluginAudioProcessor()
@@ -12,10 +16,23 @@ AudioPluginAudioProcessor::AudioPluginAudioProcessor()
                      #endif
                        )
 {
+//    progressPercentage = 0.0;
+//    torchThread = TorchThread(&progressPercentage, this);
+    torchThread.startThread();
+    formatManager.registerBasicFormats();
+//    auto morphVoice = new MorphVoice();
+//    morphVoice->setBuffer(&fileBuffer);
+//    synth.addVoice(&morphVoice);
+//    synth.addVoice(dynamic_cast<juce::SynthesiserVoice*>(morphVoice));
+    synth.addVoice(new MorphVoice());
+    synth.addSound(new MorphSound());
 }
+
 
 AudioPluginAudioProcessor::~AudioPluginAudioProcessor()
 {
+//    torchThread.signalThreadShouldExit();
+    torchThread.stopThread(10000);
 }
 
 //==============================================================================
@@ -88,8 +105,79 @@ void AudioPluginAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
 {
     // Use this method as the place to do any pre-playback
     // initialisation that you need..
+    
+    synth.setCurrentPlaybackSampleRate (sampleRate);
+    midiCollector.reset (sampleRate);
+    
     juce::ignoreUnused (sampleRate, samplesPerBlock);
+    DBG("sr: " << sampleRate << " perBlock: " << samplesPerBlock);
+        
 }
+
+bool AudioPluginAudioProcessor::loadSampleClip(juce::File& file) {
+        try {
+            auto *reader = formatManager.createReaderFor (file);
+            if (reader == nullptr) return false;
+            
+            auto *morphVoice = dynamic_cast<MorphVoice*>(synth.getVoice(0));
+            
+            morphVoice->fileBuffer.setSize (2, effective_length);
+            reader->read(&(morphVoice->fileBuffer), 0, effective_length, 0, true, true);
+            
+//            morphVoice.fileBuffer.setSize ((int) reader->numChannels, (int) reader->lengthInSamples);
+//            reader->read(&(morphVoice.fileBuffer), 0, (int) reader->lengthInSamples, 0, true, true);
+            morphVoice->inferenceBuffer.setSize (2, effective_length);
+            torchThread.copyInput (morphVoice->fileBuffer);
+            
+//            fileBuffer.setSize ((int) reader->numChannels, (int) reader->lengthInSamples);
+//            reader->read(&fileBuffer, 0, (int) reader->lengthInSamples, 0, true, true);
+//            inferenceBuffer.setSize (2, effective_length);
+            
+//            torchThread.copyInput (fileBuffer);
+            
+            sampleClipLoaded = true;
+            DBG("sample load success");
+            delete reader;
+            return true;
+        }
+        catch (const c10::Error& e) {
+            return false;
+        }
+}
+
+bool AudioPluginAudioProcessor::loadTorchModule(juce::File& file) {
+    
+    torchModuleLoaded = torchThread.loadTorchModule(file);
+    return torchModuleLoaded;
+}
+
+void AudioPluginAudioProcessor::torchInference() {
+    
+    jassert(torchModuleLoaded);
+    
+    torchThread.requestInference();
+    torchInferenceInProgress = true;
+    listeners.call([this] (Listener& l) { l.inferenceStatusChanged (this); });
+}
+
+void AudioPluginAudioProcessor::torchResample() {
+    
+    jassert(torchModuleLoaded);
+    jassert(sampleClipLoaded);
+    
+    torchThread.requestInference();
+    torchInferenceInProgress = true;
+    listeners.call([this] (Listener& l) { l.inferenceStatusChanged (this); });
+    
+    
+}
+
+void AudioPluginAudioProcessor::setResampleNoiseLevel(double noiseLevel) {
+    
+    jassert(noiseLevel >= 0 && noiseLevel <= 1);
+    torchThread.noise_level = noiseLevel;
+}
+
 
 void AudioPluginAudioProcessor::releaseResources()
 {
@@ -124,33 +212,69 @@ bool AudioPluginAudioProcessor::isBusesLayoutSupported (const BusesLayout& layou
 void AudioPluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                               juce::MidiBuffer& midiMessages)
 {
-    juce::ignoreUnused (midiMessages);
+//    juce::ignoreUnused (midiMessages);
+    
+    buffer.clear();
 
-    juce::ScopedNoDenormals noDenormals;
-    auto totalNumInputChannels  = getTotalNumInputChannels();
-    auto totalNumOutputChannels = getTotalNumOutputChannels();
+    // Send MIDI messages to the synthesizer
+//    juce::MidiBuffer processedMidi;
 
-    // In case we have more outputs than inputs, this code clears any output
-    // channels that didn't contain input data, (because these aren't
-    // guaranteed to be empty - they may contain garbage).
-    // This is here to avoid people getting screaming feedback
-    // when they first compile a plugin, but obviously you don't need to keep
-    // this code if your algorithm always overwrites all the output channels.
-    for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
-        buffer.clear (i, 0, buffer.getNumSamples());
+//    for (const auto metadata : midiMessages)
+//    {
+//        auto message = metadata.getMessage();
+//        const auto time = metadata.samplePosition;
+//        DBG("Note number " << message.getNoteNumber());
+//
+//        if (message.isNoteOn())
+//        {
+//            DBG("note on!");
+////            message = juce::MidiMessage::noteOn(message.getChannel(), message.getNoteNumber(), 1.0f);
+//        }
+//
+////        processedMidi.addEvent(message, time);
+//    }
 
-    // This is the place where you'd normally do the guts of your plugin's
-    // audio processing...
-    // Make sure to reset the state if your inner loop is processing
-    // the samples and the outer loop is handling the channels.
-    // Alternatively, you can process the samples with the channels
-    // interleaved by keeping the same state.
-    for (int channel = 0; channel < totalNumInputChannels; ++channel)
-    {
-        auto* channelData = buffer.getWritePointer (channel);
-        juce::ignoreUnused (channelData);
-        // ..do something to the data...
-    }
+//    midiMessages.swapWith(processedMidi);
+    
+    checkInferenceCompleted();
+//    if (torchInferenceCompleted && !torchThread.outputCopied) {
+//            torchThread.copyOutput (&(morphVoice.inferenceBuffer));
+////            torchInferenceCompleted = true;
+//    }
+//    if (torchThread.outputCopied) {
+////        DBG("adding morphed");
+//        morphVoice.addMorphed = true;
+//    }
+    
+    
+    synth.renderNextBlock(buffer, midiMessages, 0, buffer.getNumSamples());
+    
+//    juce::ScopedNoDenormals noDenormals;
+//    auto totalNumOutputChannels = getTotalNumOutputChannels();
+//
+//    if (torchThread.inferenceCompleted && !torchThread.outputCopied) {
+//        torchThread.copyOutput (&inferenceBuffer);
+//        torchInferenceCompleted = true;
+//    }
+//
+//    auto bufferSamplesRemaining = fileBuffer.getNumSamples() - curr_sample;
+//    auto samplesThisTime = juce::jmin (buffer.getNumSamples(), bufferSamplesRemaining);
+//
+//    for (int channel = 0; channel < totalNumOutputChannels; ++channel)
+//    {
+//        auto* channelData = buffer.getWritePointer (channel);
+//        juce::ignoreUnused (channelData);
+//        // ..do something to the data...
+//
+//        if (torchInferenceCompleted && torchThread.outputCopied) {
+//            buffer.copyFrom(channel, 0, inferenceBuffer, channel, curr_sample, samplesThisTime);
+//        } else if (sampleClipLoaded) {
+//            buffer.copyFrom(channel, 0, fileBuffer, channel, curr_sample, samplesThisTime);
+//        }
+//    }
+//
+//    curr_sample = (curr_sample + samplesThisTime) % sample_size;
+   
 }
 
 //==============================================================================
@@ -178,6 +302,60 @@ void AudioPluginAudioProcessor::setStateInformation (const void* data, int sizeI
     // You should use this method to restore your parameters from this memory block,
     // whose contents will have been created by the getStateInformation() call.
     juce::ignoreUnused (data, sizeInBytes);
+}
+
+bool AudioPluginAudioProcessor::getModuleLoaded () {
+    return torchModuleLoaded;
+}
+bool AudioPluginAudioProcessor::getSampleLoaded () {
+    return sampleClipLoaded;
+}
+bool AudioPluginAudioProcessor::getInferenceCompleted () {
+    return torchInferenceCompleted && torchOutputCopied;
+}
+
+bool AudioPluginAudioProcessor::getInferenceInProgress () {
+    return torchInferenceInProgress;
+}
+ 
+void AudioPluginAudioProcessor::setMorph (bool morph) {
+    jassert(torchThread.outputCopied);
+    
+    auto *morphVoice = dynamic_cast<MorphVoice*>(synth.getVoice(0));
+    morphVoice->addMorphed = morph;
+}
+
+void AudioPluginAudioProcessor::setMix (float mix) {
+//    jassert(torchThread.outputCopied);
+    
+    auto *morphVoice = dynamic_cast<MorphVoice*>(synth.getVoice(0));
+    morphVoice->mixParam = mix;
+}
+
+
+void AudioPluginAudioProcessor::addListener (Listener* newListener) { listeners.add (newListener); }
+
+void AudioPluginAudioProcessor::checkInferenceCompleted () {
+    
+    
+    if (torchThread.inferenceCompleted != torchInferenceCompleted) {
+        DBG("check inference");
+        torchInferenceCompleted = torchThread.inferenceCompleted;
+        torchInferenceInProgress = false;
+//        buttonListeners.callChecked (checker, [this] (Listener& l) { l.buttonClicked (this); });
+        listeners.call([this] (Listener& l) { l.inferenceStatusChanged (this); });
+//        listeners.call(&AudioPluginAudioProcessor::inferenceStatusChanged, this);
+    }
+    if (torchThread.outputCopied != torchOutputCopied ) {
+        DBG("check output copied");
+        torchOutputCopied = torchThread.outputCopied;
+        listeners.call([this] (Listener& l) { l.inferenceStatusChanged (this); });
+    }
+    if (torchInferenceCompleted && !torchThread.outputCopied) {
+        auto *morphVoice = dynamic_cast<MorphVoice*>(synth.getVoice(0));
+        torchThread.copyOutput (&(morphVoice->inferenceBuffer));
+    }
+    
 }
 
 //==============================================================================

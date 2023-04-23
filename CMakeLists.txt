@@ -23,6 +23,9 @@ project(NEURAL_MORPH VERSION 0.0.1)
 
 find_package(Torch REQUIRED)
 
+set(JUCE_BUILD_EXTRAS ON)
+set(JUCE_ENABLE_MODULE_SOURCE_GROUPS ON)
+
 
 find_package(JUCE CONFIG REQUIRED)        # If you've installed JUCE to your system
 # or
@@ -42,12 +45,13 @@ find_package(JUCE CONFIG REQUIRED)        # If you've installed JUCE to your sys
 # the formats specified by the FORMATS arguments. This function accepts many optional arguments.
 # Check the readme at `docs/CMake API.md` in the JUCE repo for the full list.
 
-juce_add_plugin(AudioPluginExample
+juce_add_plugin(NeuralMorph
     VERSION 0.0.1                                # Set this if the plugin version is different to the project version
-    # ICON_BIG ...                              # ICON_* arguments specify a path to an image file to use as an icon for the Standalone
+    ICON_BIG "Resources/logo-small.png"                              # ICON_* arguments specify a path to an image file to use as an icon for the Standalone
     # ICON_SMALL ...
     COMPANY_NAME "Alan Zhu"                          # Specify the name of the plugin's author
-    IS_SYNTH FALSE                       # Is this a synth or an effect?
+    IS_SYNTH TRUE                      # Is this a synth or an effect?
+    NEEDS_MIDI_INPUT TRUE
     # NEEDS_MIDI_INPUT TRUE/FALSE               # Does the plugin need midi input?
     # NEEDS_MIDI_OUTPUT TRUE/FALSE              # Does the plugin need midi output?
     # IS_MIDI_EFFECT TRUE/FALSE                 # Is this plugin a MIDI effect?
@@ -56,6 +60,7 @@ juce_add_plugin(AudioPluginExample
     PLUGIN_MANUFACTURER_CODE Juce               # A four-character manufacturer id with at least one upper-case character
     PLUGIN_CODE Dem0                            # A unique four-character plugin id with exactly one upper-case character
                                                 # GarageBand 10.3 requires the first letter to be upper-case, and the remaining letters to be lower-case
+    BUNDLE_ID "com.AlanZhu.NeuralMorph"
     FORMATS AU VST3 Standalone                  # The formats to build. Other valid formats are: AAX Unity VST AU AUv3
     PRODUCT_NAME "Neural Morph")        # The name of the final executable, which can differ from the target name
 
@@ -65,24 +70,29 @@ juce_add_plugin(AudioPluginExample
 # include all your JUCE module headers; if you're happy to include module headers directly, you
 # probably don't need to call this.
 
-# juce_generate_juce_header(AudioPluginExample)
+juce_generate_juce_header(NeuralMorph)
+
+# juce_add_module()
 
 # `target_sources` adds source files to a target. We pass the target that needs the sources as the
 # first argument, then a visibility parameter for the sources which should normally be PRIVATE.
 # Finally, we supply a list of source files that will be built into the target. This is a standard
 # CMake command.
 
-target_sources(AudioPluginExample
+target_sources(NeuralMorph
     PRIVATE
         source/PluginEditor.h
         source/PluginProcessor.h
         source/PluginEditor.cpp
-        source/PluginProcessor.cpp)
+        source/PluginProcessor.cpp
+        source/Diffusion.h
+        source/Diffusion.cpp
+        source/TorchThread.cpp)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 
-target_link_libraries(AudioPluginExample PUBLIC "${TORCH_LIBRARIES}")
-set_property(TARGET AudioPluginExample PROPERTY CXX_STANDARD 14)
+target_link_libraries(NeuralMorph PUBLIC "${TORCH_LIBRARIES}")
+set_property(TARGET NeuralMorph PROPERTY CXX_STANDARD 14)
 
 # `target_compile_definitions` adds some preprocessor definitions to our target. In a Projucer
 # project, these might be passed in the 'Preprocessor Definitions' field. JUCE modules also make use
@@ -91,12 +101,13 @@ set_property(TARGET AudioPluginExample PROPERTY CXX_STANDARD 14)
 # definitions will be visible both to your code, and also the JUCE module code, so for new
 # definitions, pick unique names that are unlikely to collide! This is a standard CMake command.
 
-target_compile_definitions(AudioPluginExample
+target_compile_definitions(NeuralMorph
     PUBLIC
         # JUCE_WEB_BROWSER and JUCE_USE_CURL would be on by default, but you might not need them.
         JUCE_WEB_BROWSER=0  # If you remove this, add `NEEDS_WEB_BROWSER TRUE` to the `juce_add_plugin` call
         JUCE_USE_CURL=0     # If you remove this, add `NEEDS_CURL TRUE` to the `juce_add_plugin` call
-        JUCE_VST3_CAN_REPLACE_VST2=0)
+        JUCE_VST3_CAN_REPLACE_VST2=0
+        DONT_SET_USING_JUCE_NAMESPACE=1)
 
 # If your target needs extra binary assets, you can add them here. The first argument is the name of
 # a new static library target that will include all the binary resources. There is an optional
@@ -113,7 +124,7 @@ target_compile_definitions(AudioPluginExample
 # linked automatically. If we'd generated a binary data target above, we would need to link to it
 # here too. This is a standard CMake command.
 
-target_link_libraries(AudioPluginExample
+target_link_libraries(NeuralMorph
     PRIVATE
         # AudioPluginData           # If we'd created a binary data target, we'd link to it here
         juce::juce_audio_utils
