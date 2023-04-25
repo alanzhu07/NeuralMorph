@@ -66,6 +66,7 @@ public:
     
     void torchResample() {
         DBG("torch thread resample begin");
+        DBG("using steps = " << num_steps << ", noise = " << noise_level);
         
         progress = 0.0;
         inferenceCompleted = false;

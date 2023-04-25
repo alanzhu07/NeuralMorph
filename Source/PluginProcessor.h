@@ -22,7 +22,7 @@ struct MorphSound   : public juce::SynthesiserSound
 class MorphVoice : public juce::SynthesiserVoice
 {
 public:
-    MorphVoice() {}
+    MorphVoice(juce::AudioProcessorValueTreeState& vts): valueTreeState (vts) {}
 //    ~MorphVoice() {} override;
     
     
@@ -64,9 +64,9 @@ public:
     void renderNextBlock(juce::AudioBuffer<float>& outputBuffer, int startSample, int numSamples) override
     {
 //        if (fileBuffer != nullptr)
-        if (addMorphed) {
-            DBG("morphed");
-        }
+//        if (addMorphed) {
+//            DBG("morphed");
+//        }
         if (playing)
         {
             auto outputSamplesRemaining = numSamples;
@@ -85,7 +85,8 @@ public:
                 
                 for (int channel = 0; channel < numOutputChannels; ++channel)
                 {
-                    
+                    float mixParam = (float) *(valueTreeState.getRawParameterValue ("mix"));
+                    bool addMorphed = (bool) *(valueTreeState.getRawParameterValue ("morphOn"));
                     
                     
                     if (addMorphed) {
@@ -117,12 +118,12 @@ public:
     
     juce::AudioSampleBuffer fileBuffer;
     juce::AudioSampleBuffer inferenceBuffer;
-    bool addMorphed = false;
-    float mixParam = 1.0f;
+//    bool addMorphed = false;
+//    float mixParam = 1.0f;
     
 private:
 //    std::shared_ptr<juce::AudioBuffer<float>> sampleBuffer;
-    
+    juce::AudioProcessorValueTreeState& valueTreeState;
     bool playing = false;
     int currSample = 0;
     double currentAngle = 0.0, angleDelta = 0.0, level = 0.0, tailOff = 0.0;
@@ -184,34 +185,33 @@ public:
     void torchResample () ;
     void setMorph (bool morph) ;
     void setMix (float mix);
-    void setResampleNoiseLevel (double noiseLevel) ;
+    void setResampleNoiseLevel () ;
+    void setInferenceSteps () ;
     
     void checkInferenceCompleted ();
     
-    double progressPercentage = 0.0;
+//    double progressPercentage = 0.0;
     
     TorchThread torchThread {};
     
-    class Listener
-       {
-       public:
-           virtual ~Listener() = default;
-           virtual void inferenceStatusChanged(AudioPluginAudioProcessor*) = 0;
-       };
+    juce::AudioFormatManager formatManager;
+    juce::AudioThumbnailCache thumbnailCache;
+    juce::AudioThumbnail visualizer_sample;
+    juce::AudioThumbnail visualizer_morph;
     
-    void addListener (Listener* newListener);
     
+    juce::String modelName;
+    juce::String sampleName;
     
     
 private:
     
 //    MorphVoice *morphVoice;
-    
-    juce::ListenerList<Listener> listeners;
+    juce::AudioProcessorValueTreeState parameters;
     
     juce::MidiMessageCollector midiCollector;
     
-    juce::AudioFormatManager formatManager;
+    
 //    juce::AudioSampleBuffer fileBuffer;
 //    juce::AudioSampleBuffer inferenceBuffer;
     
@@ -225,6 +225,8 @@ private:
     bool torchInferenceInProgress = false;
     bool torchOutputCopied = false;
     bool sampleClipLoaded = false;
+    bool sampleDrawn = false;
+    bool outputDrawn = false;
     
     int curr_sample = 0;
     int sample_size = 65536;

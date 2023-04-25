@@ -1,0 +1,3 @@
+TORCH_CMAKE_PATH="/opt/homebrew/Cellar/pytorch/1.13.1/share/cmake"
+JUCE_CMAKE_PATH="~/opt/JUCE"
+CMAKE_GENERATOR="Xcode"

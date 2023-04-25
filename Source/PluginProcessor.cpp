@@ -14,7 +14,31 @@ AudioPluginAudioProcessor::AudioPluginAudioProcessor()
                       #endif
                        .withOutput ("Output", juce::AudioChannelSet::stereo(), true)
                      #endif
-                       )
+                       ),
+                        thumbnailCache (5),
+                        visualizer_sample(512, formatManager, thumbnailCache),
+                        visualizer_morph(512, formatManager, thumbnailCache),
+                        parameters (*this, nullptr, juce::Identifier ("NeuralMorph"),
+                      {
+                        std::make_unique<juce::AudioParameterFloat> (juce::ParameterID ("mix", 1),
+                                                                       "Mix",
+                                                                       0.0f,
+                                                                       1.0f,
+                                                                       0.5f),
+                        std::make_unique<juce::AudioParameterFloat> (juce::ParameterID ("noise", 1),
+                                                                       "Noise Amount",
+                                                                       0.0f,
+                                                                       1.0f,
+                                                                       0.5f),
+                        std::make_unique<juce::AudioParameterInt> (juce::ParameterID ("steps", 1),
+                                                                       "Denoising Steps",
+                                                                       5,
+                                                                       50,
+                                                                       10),
+                        std::make_unique<juce::AudioParameterBool> (juce::ParameterID ("morphOn", 1),
+                                                                      "Morph On",
+                                                                      false)
+                      })
 {
 //    progressPercentage = 0.0;
 //    torchThread = TorchThread(&progressPercentage, this);
@@ -24,8 +48,12 @@ AudioPluginAudioProcessor::AudioPluginAudioProcessor()
 //    morphVoice->setBuffer(&fileBuffer);
 //    synth.addVoice(&morphVoice);
 //    synth.addVoice(dynamic_cast<juce::SynthesiserVoice*>(morphVoice));
-    synth.addVoice(new MorphVoice());
+    synth.addVoice(new MorphVoice(parameters));
     synth.addSound(new MorphSound());
+    
+//    visualizer.addChangeListener (this);
+//    visualizer.setRepaintRate(1);
+//    visualizer.setBufferSize(effective_length);
 }
 
 
@@ -120,22 +148,19 @@ bool AudioPluginAudioProcessor::loadSampleClip(juce::File& file) {
             if (reader == nullptr) return false;
             
             auto *morphVoice = dynamic_cast<MorphVoice*>(synth.getVoice(0));
+            if (morphVoice == nullptr) return false;
             
             morphVoice->fileBuffer.setSize (2, effective_length);
             reader->read(&(morphVoice->fileBuffer), 0, effective_length, 0, true, true);
-            
-//            morphVoice.fileBuffer.setSize ((int) reader->numChannels, (int) reader->lengthInSamples);
-//            reader->read(&(morphVoice.fileBuffer), 0, (int) reader->lengthInSamples, 0, true, true);
-            morphVoice->inferenceBuffer.setSize (2, effective_length);
             torchThread.copyInput (morphVoice->fileBuffer);
             
-//            fileBuffer.setSize ((int) reader->numChannels, (int) reader->lengthInSamples);
-//            reader->read(&fileBuffer, 0, (int) reader->lengthInSamples, 0, true, true);
-//            inferenceBuffer.setSize (2, effective_length);
+            morphVoice->inferenceBuffer.setSize (2, effective_length);
             
-//            torchThread.copyInput (fileBuffer);
+            visualizer_sample.setSource(&(morphVoice->fileBuffer), 44100.0, 0);
             
             sampleClipLoaded = true;
+            sampleName = file.getFileName();
+            
             DBG("sample load success");
             delete reader;
             return true;
@@ -148,6 +173,7 @@ bool AudioPluginAudioProcessor::loadSampleClip(juce::File& file) {
 bool AudioPluginAudioProcessor::loadTorchModule(juce::File& file) {
     
     torchModuleLoaded = torchThread.loadTorchModule(file);
+    if (torchModuleLoaded) modelName = file.getFileNameWithoutExtension();
     return torchModuleLoaded;
 }
 
@@ -156,8 +182,8 @@ void AudioPluginAudioProcessor::torchInference() {
     jassert(torchModuleLoaded);
     
     torchThread.requestInference();
+    outputDrawn = false;
     torchInferenceInProgress = true;
-    listeners.call([this] (Listener& l) { l.inferenceStatusChanged (this); });
 }
 
 void AudioPluginAudioProcessor::torchResample() {
@@ -166,16 +192,22 @@ void AudioPluginAudioProcessor::torchResample() {
     jassert(sampleClipLoaded);
     
     torchThread.requestInference();
+    outputDrawn = false;
     torchInferenceInProgress = true;
-    listeners.call([this] (Listener& l) { l.inferenceStatusChanged (this); });
     
     
 }
 
-void AudioPluginAudioProcessor::setResampleNoiseLevel(double noiseLevel) {
-    
-    jassert(noiseLevel >= 0 && noiseLevel <= 1);
+void AudioPluginAudioProcessor::setResampleNoiseLevel() {
+    auto noiseLevel = (double) *(parameters.getRawParameterValue ("noise"));
+    DBG("setting noise to " << noiseLevel);
     torchThread.noise_level = noiseLevel;
+}
+
+void AudioPluginAudioProcessor::setInferenceSteps() {
+    auto steps = (int) *(parameters.getRawParameterValue ("steps"));
+    DBG("setting steps to " << steps);
+    torchThread.num_steps = steps;
 }
 
 
@@ -212,68 +244,12 @@ bool AudioPluginAudioProcessor::isBusesLayoutSupported (const BusesLayout& layou
 void AudioPluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                               juce::MidiBuffer& midiMessages)
 {
-//    juce::ignoreUnused (midiMessages);
     
     buffer.clear();
-
-    // Send MIDI messages to the synthesizer
-//    juce::MidiBuffer processedMidi;
-
-//    for (const auto metadata : midiMessages)
-//    {
-//        auto message = metadata.getMessage();
-//        const auto time = metadata.samplePosition;
-//        DBG("Note number " << message.getNoteNumber());
-//
-//        if (message.isNoteOn())
-//        {
-//            DBG("note on!");
-////            message = juce::MidiMessage::noteOn(message.getChannel(), message.getNoteNumber(), 1.0f);
-//        }
-//
-////        processedMidi.addEvent(message, time);
-//    }
-
-//    midiMessages.swapWith(processedMidi);
     
     checkInferenceCompleted();
-//    if (torchInferenceCompleted && !torchThread.outputCopied) {
-//            torchThread.copyOutput (&(morphVoice.inferenceBuffer));
-////            torchInferenceCompleted = true;
-//    }
-//    if (torchThread.outputCopied) {
-////        DBG("adding morphed");
-//        morphVoice.addMorphed = true;
-//    }
-    
     
     synth.renderNextBlock(buffer, midiMessages, 0, buffer.getNumSamples());
-    
-//    juce::ScopedNoDenormals noDenormals;
-//    auto totalNumOutputChannels = getTotalNumOutputChannels();
-//
-//    if (torchThread.inferenceCompleted && !torchThread.outputCopied) {
-//        torchThread.copyOutput (&inferenceBuffer);
-//        torchInferenceCompleted = true;
-//    }
-//
-//    auto bufferSamplesRemaining = fileBuffer.getNumSamples() - curr_sample;
-//    auto samplesThisTime = juce::jmin (buffer.getNumSamples(), bufferSamplesRemaining);
-//
-//    for (int channel = 0; channel < totalNumOutputChannels; ++channel)
-//    {
-//        auto* channelData = buffer.getWritePointer (channel);
-//        juce::ignoreUnused (channelData);
-//        // ..do something to the data...
-//
-//        if (torchInferenceCompleted && torchThread.outputCopied) {
-//            buffer.copyFrom(channel, 0, inferenceBuffer, channel, curr_sample, samplesThisTime);
-//        } else if (sampleClipLoaded) {
-//            buffer.copyFrom(channel, 0, fileBuffer, channel, curr_sample, samplesThisTime);
-//        }
-//    }
-//
-//    curr_sample = (curr_sample + samplesThisTime) % sample_size;
    
 }
 
@@ -285,7 +261,7 @@ bool AudioPluginAudioProcessor::hasEditor() const
 
 juce::AudioProcessorEditor* AudioPluginAudioProcessor::createEditor()
 {
-    return new AudioPluginAudioProcessorEditor (*this);
+    return new AudioPluginAudioProcessorEditor (*this, parameters);
 }
 
 //==============================================================================
@@ -295,6 +271,10 @@ void AudioPluginAudioProcessor::getStateInformation (juce::MemoryBlock& destData
     // You could do that either as raw data, or use the XML or ValueTree classes
     // as intermediaries to make it easy to save and load complex data.
     juce::ignoreUnused (destData);
+//    juce::MemoryOutputStream (destData, true).writeFloat (*gain);
+    auto state = parameters.copyState();
+    std::unique_ptr<juce::XmlElement> xml (state.createXml());
+    copyXmlToBinary (*xml, destData);
 }
 
 void AudioPluginAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
@@ -302,6 +282,12 @@ void AudioPluginAudioProcessor::setStateInformation (const void* data, int sizeI
     // You should use this method to restore your parameters from this memory block,
     // whose contents will have been created by the getStateInformation() call.
     juce::ignoreUnused (data, sizeInBytes);
+    
+    std::unique_ptr<juce::XmlElement> xmlState (getXmlFromBinary (data, sizeInBytes));
+
+    if (xmlState.get() != nullptr)
+        if (xmlState->hasTagName (parameters.state.getType()))
+            parameters.replaceState (juce::ValueTree::fromXml (*xmlState));
 }
 
 bool AudioPluginAudioProcessor::getModuleLoaded () {
@@ -317,44 +303,58 @@ bool AudioPluginAudioProcessor::getInferenceCompleted () {
 bool AudioPluginAudioProcessor::getInferenceInProgress () {
     return torchInferenceInProgress;
 }
- 
-void AudioPluginAudioProcessor::setMorph (bool morph) {
-    jassert(torchThread.outputCopied);
-    
-    auto *morphVoice = dynamic_cast<MorphVoice*>(synth.getVoice(0));
-    morphVoice->addMorphed = morph;
-}
-
-void AudioPluginAudioProcessor::setMix (float mix) {
-//    jassert(torchThread.outputCopied);
-    
-    auto *morphVoice = dynamic_cast<MorphVoice*>(synth.getVoice(0));
-    morphVoice->mixParam = mix;
-}
-
-
-void AudioPluginAudioProcessor::addListener (Listener* newListener) { listeners.add (newListener); }
 
 void AudioPluginAudioProcessor::checkInferenceCompleted () {
     
-    
-    if (torchThread.inferenceCompleted != torchInferenceCompleted) {
-        DBG("check inference");
-        torchInferenceCompleted = torchThread.inferenceCompleted;
-        torchInferenceInProgress = false;
-//        buttonListeners.callChecked (checker, [this] (Listener& l) { l.buttonClicked (this); });
-        listeners.call([this] (Listener& l) { l.inferenceStatusChanged (this); });
-//        listeners.call(&AudioPluginAudioProcessor::inferenceStatusChanged, this);
-    }
-    if (torchThread.outputCopied != torchOutputCopied ) {
-        DBG("check output copied");
-        torchOutputCopied = torchThread.outputCopied;
-        listeners.call([this] (Listener& l) { l.inferenceStatusChanged (this); });
-    }
-    if (torchInferenceCompleted && !torchThread.outputCopied) {
+    if (torchThread.inferenceCompleted && !torchThread.outputCopied) {
         auto *morphVoice = dynamic_cast<MorphVoice*>(synth.getVoice(0));
-        torchThread.copyOutput (&(morphVoice->inferenceBuffer));
+        juce::ScopedLock sl(getCallbackLock());
+        juce::MessageManagerLock mml;
+        if (mml.lockWasGained()) {
+            torchThread.copyOutput (&(morphVoice->inferenceBuffer));
+        }
+        
     }
+    
+    if (torchThread.outputCopied && !sampleDrawn) {
+        auto *morphVoice = dynamic_cast<MorphVoice*>(synth.getVoice(0));
+        juce::ScopedLock sl(getCallbackLock());
+        juce::MessageManagerLock mml;
+        if (mml.lockWasGained()) {
+            visualizer_morph.setSource(&(morphVoice->inferenceBuffer), 44100.0, 1);
+            sampleDrawn = true;
+        }
+    }
+    
+    torchInferenceCompleted = torchThread.inferenceCompleted;
+    torchOutputCopied = torchThread.outputCopied;
+    if (torchInferenceInProgress && torchInferenceCompleted) torchInferenceInProgress = false;
+    
+//    if (torchThread.inferenceCompleted != torchInferenceCompleted) {
+//        DBG("check inference");
+//        torchInferenceCompleted = torchThread.inferenceCompleted;
+//        torchInferenceInProgress = false;
+////        buttonListeners.callChecked (checker, [this] (Listener& l) { l.buttonClicked (this); });
+////        listeners.call([this] (Listener& l) { l.inferenceStatusChanged (this); });
+////        listeners.call(&AudioPluginAudioProcessor::inferenceStatusChanged, this);
+//    }
+//    if (torchThread.outputCopied != torchOutputCopied ) {
+//        DBG("check output copied");
+//        torchOutputCopied = torchThread.outputCopied;
+////        listeners.call([this] (Listener& l) { l.inferenceStatusChanged (this); });
+//        if (torchOutputCopied) {
+//            auto *morphVoice = dynamic_cast<MorphVoice*>(synth.getVoice(0));
+//            juce::ScopedLock sl(getCallbackLock());
+//            juce::MessageManagerLock mml;
+//            if (mml.lockWasGained()) {
+//                visualizer_morph.setSource(&(morphVoice->inferenceBuffer), 44100.0, 1);
+//            }
+//        }
+//    }
+//    if (torchInferenceCompleted && !torchThread.outputCopied) {
+//        auto *morphVoice = dynamic_cast<MorphVoice*>(synth.getVoice(0));
+//        torchThread.copyOutput (&(morphVoice->inferenceBuffer));
+//    }
     
 }
 

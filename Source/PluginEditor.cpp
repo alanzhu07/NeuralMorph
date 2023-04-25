@@ -4,80 +4,143 @@
 #include <iostream>
 
 //==============================================================================
-AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAudioProcessor& p)
-: AudioProcessorEditor (&p), progressBar (p.torchThread.progress), processorRef (p)
+AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAudioProcessor& p, juce::AudioProcessorValueTreeState& vts)
+: AudioProcessorEditor (&p), progressBar (p.torchThread.progress), processorRef (p),
+valueTreeState (vts)
 {
     juce::ignoreUnused (processorRef);
     // Make sure that before the constructor has finished, you've set the
     // editor's size to whatever you need it to be.
     
-    p.addListener(this);
+//    p.addListener(this);
+//    myLookAndFeel.setColourScheme( juce::LookAndFeel_V4::getMidnightColourScheme ());
+//    for (auto font : juce::Font::findAllTypefaceNames())
+//        DBG(font);
     
-    setSize (600, 600);
     
-    mixSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
-    mixSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, true, 50, 50);
+    myLookAndFeel.setColourScheme( juce::LookAndFeel_V4::getMidnightColourScheme ());
+    setLookAndFeel (&myLookAndFeel);
+    mixSlider.setColour( juce::Slider::textBoxOutlineColourId  , juce::Colours::transparentWhite);
+    noiseSlider.setColour( juce::Slider::textBoxOutlineColourId  , juce::Colours::transparentWhite);
+    stepSlider.setColour( juce::Slider::textBoxOutlineColourId  , juce::Colours::transparentWhite);
+//    mixSlider.setColour( juce::Slider::textBoxTextColourId , juce::Colours::red);
+    getLookAndFeel().setColour( juce::Slider::thumbColourId , juce::Colour (0xff7f5cbc));
+//    setLookAndFeel (&myLookAndFeel);
+    
+    setSize (1000, 600);
+    
+    mixSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    mixSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 50, 20);
     mixSlider.setRange (0.0, 1.0, 0.01);
-    mixSlider.onDragEnd = [this, &p] { setMix(p); };
-    mixSlider.setValue (0.5, juce::dontSendNotification);
+//    mixSlider.onValueChange = [this, &p] { setMix(p); };
+//    mixSlider.setValue (0.5, juce::dontSendNotification);
+    mixAttachment.reset (new juce::AudioProcessorValueTreeState::SliderAttachment (valueTreeState, "mix", mixSlider));
     addAndMakeVisible (&mixSlider);
+    mixLabel.setText ("Mix", juce::dontSendNotification);
+    mixLabel.setJustificationType (juce::Justification::centred );
+    mixLabel.attachToComponent (&mixSlider, false);
+    addAndMakeVisible (&mixLabel);
     
-    noiseSlider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
-    noiseSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, true, 50, 50);
+    noiseSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    noiseSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 50, 20);
     noiseSlider.setRange (0.0, 1.0, 0.01);
-    noiseSlider.onDragEnd = [this, &p] { setNoise(p); };
-    noiseSlider.setValue (0.5, juce::dontSendNotification);
+    noiseSlider.onValueChange = [this] { processorRef.setResampleNoiseLevel(); };
+//    noiseSlider.setValue (0.5, juce::dontSendNotification);
+    noiseAttachment.reset (new juce::AudioProcessorValueTreeState::SliderAttachment (valueTreeState, "noise", noiseSlider));
     addAndMakeVisible (&noiseSlider);
+    noiseLabel.setText ("Noise Amount", juce::dontSendNotification);
+    noiseLabel.setJustificationType (juce::Justification::centred );
+    noiseLabel.attachToComponent (&noiseSlider, false);
+    addAndMakeVisible (&noiseLabel);
     
+    stepSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    stepSlider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 50, 20);
+    stepSlider.setRange (5, 50, 1);
+    stepSlider.setSkewFactorFromMidPoint (10);
+    stepSlider.onValueChange = [this] { processorRef.setInferenceSteps(); };
+    stepAttachment.reset (new juce::AudioProcessorValueTreeState::SliderAttachment (valueTreeState, "steps", stepSlider));
+    addAndMakeVisible (&stepSlider);
+    stepLabel.setText ("Denoising Steps", juce::dontSendNotification);
+    stepLabel.setJustificationType (juce::Justification::centred );
+    stepLabel.attachToComponent (&stepSlider, false);
+    addAndMakeVisible (&stepLabel);
     
-    loadModelButton.setButtonText ("Select model to load...");
-    loadModelButton.onClick = [this, &p] { loadTorchModule(p);  };
+    loadModelButton.onClick = [this] { loadTorchModule();  };
     addAndMakeVisible (&loadModelButton);
     
-    loadClipButton.setButtonText ("Select sample to load...");
-    loadClipButton.onClick = [this, &p] { loadSampleClip(p);  };
+    loadClipButton.onClick = [this] { loadSampleClip();  };
     addAndMakeVisible (&loadClipButton);
     
     inferenceButton.setButtonText ("Morph");
     inferenceButton.onClick = [this, &p] { doMorph(p);  };
-    inferenceButton.setEnabled (false);
+//    inferenceButton.setEnabled (false);
     inferenceButton.setToggleable (true);
     addAndMakeVisible (&inferenceButton);
     
-    bypassButton.setButtonText ("OFF");
-    bypassButton.setEnabled (false);
-    bypassButton.onClick = [this, &p] { setBypass(p);  };
+    
+    
     bypassButton.setClickingTogglesState (true);
+    onAttachment.reset (new juce::AudioProcessorValueTreeState::ButtonAttachment (valueTreeState, "morphOn", bypassButton));
     addAndMakeVisible (&bypassButton);
     
-    DBG("progressp perc = " << p.torchThread.progress);
+//    DBG("progressp perc = " << p.torchThread.progress);
 //    progressPercentage = &(p.progressPercentage);
 //    progressBar = std::make_unique<juce::ProgressBar> (p.torchThread.progress);
 //    addAndMakeVisible (progressBar.get());
     addAndMakeVisible (&progressBar);
     
+//    addAndMakeVisible (processorRef.visualizer);
+    processorRef.visualizer_sample.addChangeListener (this);
+    processorRef.visualizer_morph.addChangeListener (this);
+//    processorRef.parameters.addParameterListener ("morphOn", this);
     
 }
 
 AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
 {
+    setLookAndFeel (nullptr);
 }
 
-void AudioPluginAudioProcessorEditor::checkInferenceOk(AudioPluginAudioProcessor& p) {
-    if (p.getModuleLoaded() && p.getSampleLoaded()) {
-        inferenceButton.setEnabled (true);
+void AudioPluginAudioProcessorEditor::changeListenerCallback (juce::ChangeBroadcaster* source) {
+    if (source == &(processorRef.visualizer_sample))  {
+        DBG("received visualizer sample change");
+        repaint();
+    } else if (source == &(processorRef.visualizer_morph))  {
+        DBG("received visualizer morph change");
+        repaint();
     }
 }
 
-void AudioPluginAudioProcessorEditor::loadTorchModule(AudioPluginAudioProcessor& p)
+void AudioPluginAudioProcessorEditor::checkInferenceOk() {
+    
+    if (processorRef.getModuleLoaded() && processorRef.getSampleLoaded()) {
+        if (processorRef.getInferenceInProgress()) {
+            inferenceButton.setEnabled (false);
+            bypassButton.setEnabled (true) ;
+        }
+        else if (processorRef.getInferenceCompleted()) {
+            inferenceButton.setEnabled (true);
+            bypassButton.setEnabled (true);
+        }
+        else {
+            inferenceButton.setEnabled (true);
+            bypassButton.setEnabled (false) ;
+        }
+    } else {
+        inferenceButton.setEnabled (false);
+        bypassButton.setEnabled (false) ;
+    }
+}
+
+void AudioPluginAudioProcessorEditor::loadTorchModule()
 {
     chooser = std::make_unique<juce::FileChooser> ("Select a saved torch module...",
                                                            juce::File{},
-                                                           "*");
+                                                           "*.pt");
     auto chooserFlags = juce::FileBrowserComponent::openMode
                       | juce::FileBrowserComponent::canSelectFiles;
 
-    chooser->launchAsync (chooserFlags, [this, &p] (const juce::FileChooser& fc)
+    chooser->launchAsync (chooserFlags, [this] (const juce::FileChooser& fc)
     {
         DBG("choosefile");
         auto file = fc.getResult();
@@ -85,18 +148,12 @@ void AudioPluginAudioProcessorEditor::loadTorchModule(AudioPluginAudioProcessor&
         if (file != juce::File{}) {
             DBG("user chose " << file.getFullPathName());
             
-            auto success = p.loadTorchModule(file);
-            
-            if (success)
-                loadModelButton.setButtonText ("Model " + file.getFileNameWithoutExtension() + " loaded");
-            else loadModelButton.setButtonText ("Model loading failed");
-            
-            checkInferenceOk(p);
+            modelLoadingFailed = !processorRef.loadTorchModule(file);
         }
     });
 }
 
-void AudioPluginAudioProcessorEditor::loadSampleClip(AudioPluginAudioProcessor& p)
+void AudioPluginAudioProcessorEditor::loadSampleClip()
 {
     chooser = std::make_unique<juce::FileChooser> ("Select a sample clip...",
                                                            juce::File{},
@@ -104,7 +161,7 @@ void AudioPluginAudioProcessorEditor::loadSampleClip(AudioPluginAudioProcessor& 
     auto chooserFlags = juce::FileBrowserComponent::openMode
                       | juce::FileBrowserComponent::canSelectFiles;
 
-    chooser->launchAsync (chooserFlags, [this, &p] (const juce::FileChooser& fc)
+    chooser->launchAsync (chooserFlags, [this] (const juce::FileChooser& fc)
     {
         DBG("choosefile");
         auto file = fc.getResult();
@@ -112,85 +169,67 @@ void AudioPluginAudioProcessorEditor::loadSampleClip(AudioPluginAudioProcessor& 
         if (file != juce::File{}) {
             DBG("user chose " << file.getFullPathName());
             
-            auto success = p.loadSampleClip(file);
-            
-            if (success)
-                loadClipButton.setButtonText ("Sample " + file.getFileName() + " loaded");
-            else loadClipButton.setButtonText ("Sample loading failed");
-            
-            checkInferenceOk(p);
+            sampleLoadingFailed = !processorRef.loadSampleClip(file);
         }
     });
 }
 
 void AudioPluginAudioProcessorEditor::doMorph(AudioPluginAudioProcessor& p) {
-//    progressPercentage = 0.0;
-//    p.torchResample(&progressPercentage);
-    
     p.torchResample();
-//    inferenceButton.setToggleState(true, juce::dontSendNotification);
-//    progressPercentage = 0.5;
 }
 
-void AudioPluginAudioProcessorEditor::setMix(AudioPluginAudioProcessor& p) {
-//    progressPercentage = 0.0;
-//    p.torchResample(&progressPercentage);
-    auto mixParam = mixSlider.getValue();
-    DBG("slider val " << mixParam);
-    p.setMix((float) mixParam);
-//    inferenceButton.setToggleState(true, juce::dontSendNotification);
-//    progressPercentage = 0.5;
-}
+//void AudioPluginAudioProcessorEditor::setMix(AudioPluginAudioProcessor& p) {
+////    progressPercentage = 0.0;
+////    p.torchResample(&progressPercentage);
+//    auto mixParam = mixSlider.getValue();
+//    DBG("slider val " << mixParam);
+//    p.setMix((float) mixParam);
+////    inferenceButton.setToggleState(true, juce::dontSendNotification);
+////    progressPercentage = 0.5;
+//}
 
-void AudioPluginAudioProcessorEditor::setNoise(AudioPluginAudioProcessor& p) {
-    
-    auto noiseParam = noiseSlider.getValue();
-    DBG("noiseval " << noiseParam);
-    p.setResampleNoiseLevel(noiseParam);
-    
-}
+//void AudioPluginAudioProcessorEditor::setNoise() {
+//    
+////    auto noiseParam = noiseSlider.getValue();
+////    DBG("noiseval " << noiseParam);
+////    p.setResampleNoiseLevel(noiseParam);
+//    
+//    processorRef.setResampleNoiseLevel();
+//    
+//}
 
-void AudioPluginAudioProcessorEditor::setBypass(AudioPluginAudioProcessor& p) {
-    auto state = bypassButton.getToggleState();
-    juce::String stateString  = state ? "ON" : "OFF";
-    DBG("bypass " << stateString);
-    
-    if (state) {
-        bypassButton.setButtonText ("ON");
-        p.setMorph(true);
-    } else {
-        bypassButton.setButtonText ("OFF");
-        p.setMorph(false);
-    }
-}
+//void AudioPluginAudioProcessorEditor::Steps() {
+//    
+//    processorRef.setInferenceSteps();
+//    
+//}
 
-void AudioPluginAudioProcessorEditor::inferenceStatusChanged(AudioPluginAudioProcessor* p) {
-    
-    DBG("callback " << (int) (p->getInferenceInProgress()));
-    if (p->getInferenceInProgress()) {
-        inferenceButton.setEnabled (false);
-        bypassButton.setEnabled (false) ;
-    }
-    else if (p->getModuleLoaded() && p->getSampleLoaded() && p->getInferenceCompleted()) {
-        juce::ScopedLock sl(p->getCallbackLock());
-        juce::MessageManagerLock mml;
-        if (mml.lockWasGained()) {
-            inferenceButton.setEnabled (true);
-//            inferenceButton.setToggleState(false, juce::dontSendNotification);
-            bypassButton.setEnabled (true) ;
-            
-        }
-    }
-    else {
-        juce::ScopedLock sl(p->getCallbackLock());
-        juce::MessageManagerLock mml;
-        if (mml.lockWasGained()) {
-            inferenceButton.setEnabled (false);
-            bypassButton.setEnabled (false) ;
-        }
-    }
-    
-}
+//void AudioPluginAudioProcessorEditor::setBypass(AudioPluginAudioProcessor& p) {
+//    auto state = bypassButton.getToggleState();
+//    juce::String stateString  = state ? "ON" : "OFF";
+//    DBG("bypass " << stateString);
+//
+//    if (state) {
+//        bypassButton.setButtonText ("ON");
+//        p.setMorph(true);
+//    } else {
+//        bypassButton.setButtonText ("OFF");
+//        p.setMorph(false);
+//    }
+//}
+
+//void AudioPluginAudioProcessorEditor::inferenceStatusChanged(AudioPluginAudioProcessor* p) {
+//    
+//}
+
+//void AudioPluginAudioProcessorEditor::parameterChanged (const juce::String& parameterID, float newValue) {
+//    if (parameterID == "morphOn") {
+//        DBG(parameterID << newValue);
+//        if (bool(newValue)) {
+//            bypassButton.setButtonText ("ON");
+//        } else bypassButton.setButtonText ("OFF");
+//    }
+//}
 
 //==============================================================================
 void AudioPluginAudioProcessorEditor::paint (juce::Graphics& g)
@@ -198,23 +237,54 @@ void AudioPluginAudioProcessorEditor::paint (juce::Graphics& g)
     // (Our component is opaque, so we must completely fill the background with a solid colour)
     g.fillAll (getLookAndFeel().findColour (juce::ResizableWindow::backgroundColourId));
     
+    juce::Rectangle<int> thumbnailBounds (getWidth() * 0.05, getHeight() * 0.28, getWidth() * 0.70, getHeight() * 0.3);
+    juce::Rectangle<int> thumbnailBounds2 (getWidth() * 0.05, getHeight() * 0.67, getWidth() * 0.70, getHeight() * 0.3);
+    g.setColour (getLookAndFeel().findColour ( juce::TextButton::buttonOnColourId));
+    g.setOpacity (0.3);
+    g.fillRect (thumbnailBounds);
+    g.fillRect (thumbnailBounds2);
+    
+    if (processorRef.visualizer_sample.getNumChannels() != 0) {
+        g.setColour (juce::Colour (0xff7f5cbc));
+        processorRef.visualizer_sample.drawChannels (g, thumbnailBounds, 0.0, processorRef.visualizer_sample.getTotalLength(), 1.0f);
+    }
+    if (processorRef.visualizer_morph.getNumChannels() != 0) {
+        g.setColour (juce::Colour (0xff7f5cbc));
+        processorRef.visualizer_morph.drawChannels (g, thumbnailBounds2, 0.0, processorRef.visualizer_morph.getTotalLength(), 1.0f);
+    }
 //    g.setColour (juce::Colours::white);
-//    g.setFont (15.0f);
-//    g.drawFittedText ("Hello World!", getLocalBounds(), juce::Justification::centred, 1);
+    g.setFont (35.0f);
+    g.setColour (juce::Colour (0xe67f5cbc));
+    g.drawFittedText ("Neural Morph", getLocalBounds().withHeight(getHeight() * 0.2).withCentre(juce::Point<int>(getWidth()*0.5, (int)getHeight()*0.1)), juce::Justification::centred, 1);
     
+    if (processorRef.getSampleLoaded()) loadClipButton.setButtonText ("Sample " + processorRef.sampleName + " loaded");
+    else if (sampleLoadingFailed) loadClipButton.setButtonText ("Sample loading failed");
+    else loadClipButton.setButtonText ("Select sample to load...");
     
+    if (processorRef.getModuleLoaded()) loadModelButton.setButtonText ("Model " + processorRef.modelName + " loaded");
+    else if (modelLoadingFailed) loadModelButton.setButtonText ("Model loading failed");
+    else loadModelButton.setButtonText ("Select model to load...");
+    
+    bool addMorphed = (bool) *(valueTreeState.getRawParameterValue ("morphOn"));
+    bypassButton.setButtonText (addMorphed ? "ON" : "OFF");
+    
+    checkInferenceOk();
 }
 
 void AudioPluginAudioProcessorEditor::resized()
 {
     // This is generally where you'll want to lay out the positions of any
     // subcomponents in your editor..
-    mixSlider.setBounds (40, 30, 200, 200);
-    noiseSlider.setBounds (100, 50, 200, 200);
-    loadModelButton.setBounds (40, 300, getWidth() - 20, 20);
-    loadClipButton.setBounds (40, 320, getWidth() - 20, 20);
-    inferenceButton.setBounds (10, 400, getWidth() - 20, 20);
-    bypassButton.setBounds( 350, 350, 75, 75);
-    progressBar.setBounds(25, 100, getWidth() - 25, 25);
+    mixSlider.setBounds (getWidth() * 0.77, getHeight() * 0.25, getWidth() * 0.25, getHeight() * 0.2);
+    noiseSlider.setBounds (getWidth() * 0.77, getHeight() * 0.51, getWidth() * 0.25, getHeight() * 0.2);
+    stepSlider.setBounds (getWidth() * 0.77, getHeight() * 0.77, getWidth() * 0.25, getHeight() * 0.2);
     
+    loadClipButton.setBounds (getWidth() * 0.05, getHeight() * 0.22, getWidth() * 0.34, getHeight() * 0.05);
+    loadModelButton.setBounds (getWidth() * 0.41, getHeight() * 0.22, getWidth() * 0.34, getHeight() * 0.05);
+    
+    inferenceButton.setBounds (getWidth() * 0.05, getHeight() * 0.02, getHeight() * 0.18, getHeight() * 0.18);
+    bypassButton.setBounds (getWidth() * 0.84, getHeight() * 0.02, getHeight() * 0.18, getHeight() * 0.18);
+//    getWidth() * 0.05, getHeight() * 0.65, getWidth() * 0.70, getHeight() * 0.3);
+    progressBar.setBounds(getWidth() * 0.05, getHeight() * 0.60, getWidth() * 0.70, getHeight() * 0.05);
+//    processorRef.visualizer.setBounds(getLocalBounds().withSizeKeepingCentre(getWidth() * 0.75, getHeight() * 0.5));
 }
