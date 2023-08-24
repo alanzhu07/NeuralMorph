@@ -1,5 +1,6 @@
 # Neural Morph
- Neural Morph is an audio instrument plugin which supports using Machine Learning to transform, blend, and play existing samples.
+ Neural Morph is an audio instrument plugin which supports using Machine Learning to transform, blend, and play existing samples.\
+ ![Neural Morph UI](interface.png)
 
 ## Installation
 
